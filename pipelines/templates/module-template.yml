@@ -1,0 +1,49 @@
+parameters:
+  - name: module_path
+    type: string
+    default: ""
+  - name: display_name
+    type: string
+    default: ""
+  - name: tf_version
+    type: string
+    default: "1.9.5"
+  - name: auto_apply
+    type: boolean
+    default: false
+
+jobs:
+- job: DeployModule
+  displayName: ${{ parameters.display_name }}
+  pool:
+    name: " Mod Infrastructure"
+    demands:
+      - agent.os -equals linux
+
+  steps:
+
+  - checkout: self
+    fetchDepth: 0
+
+  - bash: |
+      az cloud set --name AzureCloud
+      az login --identity
+      az account show
+    displayName: "Azure Login (Managed Identity)"
+
+  - bash: |
+      curl -fsSL "https://releases.hashicorp.com/terraform/${{ parameters.tf_version }}/terraform_${{ parameters.tf_version }}_linux_amd64.zip" -o terraform.zip
+      sudo unzip -o terraform.zip -d /usr/local/bin
+      terraform version
+    displayName: "Install Terraform"
+
+  - bash: |
+      set -e
+      terraform -chdir=${{ parameters.module_path }} init -upgrade
+      terraform -chdir=${{ parameters.module_path }} validate
+      terraform -chdir=${{ parameters.module_path }} plan -out=tfplan
+    displayName: "Terraform Plan: ${{ parameters.display_name }}"
+    env:
+      ARM_USE_MSI: true
+      ARM_TENANT_ID: $(ARM_TENANT_ID)
+      ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)

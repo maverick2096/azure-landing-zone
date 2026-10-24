@@ -1,0 +1,153 @@
+# ============================================================================  
+# Terraform Pipeline for Azure Public Cloud (One-Stage Plan & Apply)  
+# ============================================================================
+##This pipeline is for the CLI for ACR
+
+trigger: none
+
+pool:
+  name: ' Mod Infrastructure'
+  demands:
+    - agent.os -equals linux
+
+variables:
+  TF_VERSION: '1.14.2'
+  TF_WORKING_DIR: '.'
+  TF_VAR_build_userid: "$(Build.RequestedForEmail)"
+  TF_VAR_build_url: "$(System.CollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)"
+  # Dynamic build date for tagging
+  TF_BUILD_DATE: "$(Build.BuildId)-$(Date:yyyy-MM-dd_HH-mm-ss)"
+  TF_VAR_build_date: "$(TF_BUILD_DATE)"
+  TF_TARGET_MODULE: 'module.acr'
+
+stages:
+- stage: Terraform
+  displayName: 'Terraform Plan & Apply Stage'
+  jobs:
+  - job: Terraform
+    displayName: 'Terraform Plan & Apply'
+    steps:
+
+    # --------------------------
+    # Inject build metadata into terraform.tfvars (optional)
+    # --------------------------
+    - bash: |
+        TFVARS_PATH="${TF_WORKING_DIR}/terraform.tfvars"
+        BUILD_USERID="$BUILD_REQUESTEDFOREMAIL"
+        BUILD_URL="${SYSTEM_COLLECTIONURI}${SYSTEM_TEAMPROJECT}/_build/results?buildId=${BUILD_BUILDID}"
+        BUILD_DATE="$(date +%Y-%m-%d_%H-%M-%S)"
+        echo "BuildUserId: $BUILD_USERID"
+        echo "BuildURL: $BUILD_URL"
+        echo "BuildDate: $BUILD_DATE"
+        if [ -f "$TFVARS_PATH" ]; then
+          sed -i "s|REPLACE_BUILD_ID|$BUILD_USERID|g" "$TFVARS_PATH"
+          sed -i "s|REPLACE_BUILD_URL|$BUILD_URL|g" "$TFVARS_PATH"
+        fi
+      displayName: 'Inject Build Metadata into terraform.tfvars'
+
+    # --------------------------
+    # Azure Public Cloud login
+    # --------------------------
+    - bash: |
+        az cloud set --name AzureCloud
+        az login --identity
+        az account show
+      displayName: "Azure Login with Managed Identity"
+
+    # --------------------------
+    # Install Terraform
+    # --------------------------
+    - bash: |
+        set -e
+        curl -fsSL "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" -o terraform.zip
+        sudo unzip -o terraform.zip -d /usr/local/bin
+        terraform -version
+      displayName: "Install Terraform"
+
+    # --------------------------
+    # Clean Terraform cache
+    # --------------------------
+    - bash: |
+        find "${TF_WORKING_DIR}" -type d -name ".terraform" -exec rm -rf {} + 2>/dev/null || true
+        find "${TF_WORKING_DIR}" -type f -name ".terraform.lock.hcl" -exec rm -f {} + 2>/dev/null || true
+      displayName: "Clean Terraform Cache"
+
+    # --------------------------
+    # Terraform init
+    # --------------------------
+    - bash: |
+        set -e
+        cd "${TF_WORKING_DIR}"
+        terraform init -upgrade
+      displayName: "Terraform Init"
+      env:
+        ARM_USE_MSI: true
+        ARM_TENANT_ID: $(ARM_TENANT_ID)
+        ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+
+    # --------------------------
+    # Terraform Format & Validate
+    # --------------------------
+    - bash: |
+        set -e
+        cd "${TF_WORKING_DIR}"
+        terraform fmt -recursive -check -diff
+        terraform validate
+      displayName: "Terraform Format & Validate"
+      continueOnError: true
+
+    # --------------------------
+    # Terraform Plan & Apply
+    # --------------------------
+    - bash: |
+        set -e
+        cd "${TF_WORKING_DIR}"
+
+        PLAN_FILE="tfplan"
+        TARGET_FLAGS=""
+
+        if [ -n "${TF_TARGET_MODULE}" ]; then
+          for MODULE in ${TF_TARGET_MODULE}; do
+            TARGET_FLAGS="${TARGET_FLAGS} -target=${MODULE}"
+          done
+          PLAN_FILE="tfplan-$(echo ${TF_TARGET_MODULE} | tr ' ' '-' | tr '.' '-')"
+          echo "Targeting specific module(s): ${TF_TARGET_MODULE}"
+        fi
+
+        echo "Running terraform plan..."
+        terraform import module.acr[0].azurerm_monitor_diagnostic_setting.nic_diagnostics "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-Stg-AZ/providers/Microsoft.Network/networkInterfaces/nic-acrstgaz|pe-acrstgaz-nic-diag"
+        terraform plan ${TARGET_FLAGS}
+        terraform plan -out=${PLAN_FILE} ${TARGET_FLAGS}
+        echo "Applying terraform plan..."
+        terraform apply -auto-approve ${PLAN_FILE}
+
+        
+      displayName: "Terraform Plan & Apply"
+      env:
+        TF_VAR_build_userid: "$(TF_VAR_build_userid)"
+        TF_VAR_build_url: "$(TF_VAR_build_url)"
+        TF_VAR_build_date: "$(TF_BUILD_DATE)"
+        ARM_USE_MSI: true
+        ARM_TENANT_ID: $(ARM_TENANT_ID)
+        ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+
+    # --------------------------
+    # Configure ACR Soft Delete (Azure CLI)
+    # --------------------------
+    - bash: |
+        set -euo pipefail
+
+        echo "Setting Azure Public cloud..."
+        az cloud set --name AzureCloud
+
+        echo "Logging in with managed identity..."
+        az login --identity 
+
+        ACR_NAME="acrstgaz"
+
+        echo "Enabling ACR soft delete (30 days retention)..."
+        az acr config soft-delete update -r "$ACR_NAME" --status Enabled --days 30
+
+        echo "ACR soft delete configuration completed."
+
+      displayName: "Enable ACR Soft Delete (Azure CLI)"

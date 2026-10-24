@@ -1,0 +1,63 @@
+trigger:
+  none
+  #branches:
+  #  include:
+  #    - Staging
+  #paths:
+  #  include:
+  #    - modules/*
+
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  TF_VERSION: '1.9.5'
+
+steps:
+# ----------------------------
+# Checkout full history
+# ----------------------------
+- checkout: self
+  fetchDepth: 0
+
+# ----------------------------
+# Install Terraform
+# ----------------------------
+- task: TerraformInstaller@1
+  displayName: "Install Terraform"
+  inputs:
+    terraformVersion: $(TF_VERSION)
+
+# ----------------------------
+# Detect changed modules
+# ----------------------------
+- bash: |
+    echo "Detecting modified module..."
+
+    git diff --name-only HEAD HEAD~1 > changed_files.txt
+
+    MODULES=$(grep "^modules/" changed_files.txt | cut -d'/' -f2 | sort -u)
+
+    if [ -z "$MODULES" ]; then
+      echo "No module changes detected."
+      echo "##vso[task.setvariable variable=MODULES]none"
+    else
+      echo "Modules changed: $MODULES"
+      echo "##vso[task.setvariable variable=MODULES]$MODULES"
+    fi
+  displayName: "Detect Changed Modules"
+
+# ----------------------------
+# Validate each module
+# ----------------------------
+- ${{ each module in split(variables.MODULES, ' ') }}:
+  - ${{ if ne(module, 'none') }}:
+    - bash: |
+        echo "Validating module: ${module}"
+        cd modules/${module}
+
+        terraform fmt -check
+        terraform init -backend=false
+        terraform validate
+      displayName: "Validate Terraform Module: ${{ module }}"

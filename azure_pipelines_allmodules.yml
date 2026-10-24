@@ -1,0 +1,101 @@
+trigger: none
+
+# --------------------------
+# Use Self-hosted agent
+# --------------------------
+pool:
+  name: ' Mod Infrastructure'
+  demands:
+    - agent.os -equals linux
+
+variables:
+  TF_VERSION: '1.14.2'
+  TF_WORKING_DIR: '.'
+  TF_VAR_build_userid: "$(Build.RequestedForEmail)"
+  TF_VAR_build_url: "$(System.CollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)"
+
+steps:
+
+# --------------------------
+# Replace placeholders in terraform.tfvars
+# --------------------------
+- bash: |
+    TFVARS_PATH="${TF_WORKING_DIR}/terraform.tfvars"
+
+    BUILD_USERID="$BUILD_REQUESTEDFOREMAIL"
+    BUILD_URL="${SYSTEM_COLLECTIONURI}${SYSTEM_TEAMPROJECT}/_build/results?buildId=${BUILD_BUILDID}"
+    BUILD_DATE="$(date +%Y-%m-%d_%H-%M-%S)"
+
+    echo "BuildUserId: $BUILD_USERID"
+    echo "BuildURL: $BUILD_URL"
+    echo "BuildDate: $BUILD_DATE"
+
+    sed -i "s|REPLACE_BUILD_ID|$BUILD_USERID|g" "$TFVARS_PATH"
+    sed -i "s|REPLACE_BUILD_URL|$BUILD_URL|g" "$TFVARS_PATH"
+
+    echo "Updated terraform.tfvars:"
+    grep -E "BuildUserId|BuildURL|BuildDate" "$TFVARS_PATH"
+  displayName: 'Inject Build Metadata into terraform.tfvars'
+
+# --------------------------
+# Select Azure Public Cloud
+# --------------------------
+- bash: |
+    echo "Switching Azure CLI to Azure Public Cloud..."
+    az cloud set --name AzureCloud
+    az cloud show
+  displayName: "Set Azure Public Cloud"
+
+# --------------------------
+# Login using Managed Identity
+# --------------------------
+- bash: |
+    echo "Logging into Azure using the VM's Managed Identity..."
+    az login --identity
+    az account show
+  displayName: "Azure Login with VM Managed Identity"
+
+# --------------------------
+# Install Terraform
+# --------------------------
+- bash: |
+    set -e
+    echo "Installing Terraform ${TF_VERSION}..."
+    curl -fsSL "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" -o terraform.zip
+    sudo unzip -o terraform.zip -d /usr/local/bin
+    terraform -version
+  displayName: "Install Terraform"
+
+# --------------------------
+# Clean Terraform Cache
+# --------------------------
+- bash: |
+    echo "Cleaning .terraform folders..."
+    find "$(TF_WORKING_DIR)" -type d -name ".terraform" -exec rm -rf {} +
+    find "$(TF_WORKING_DIR)" -type f -name ".terraform.lock.hcl" -exec rm -f {} +
+  displayName: "Clean Terraform Cache"
+
+# --------------------------
+# Terraform Initialization
+# --------------------------
+- bash: |
+    set -e
+    cd "$(TF_WORKING_DIR)"
+    echo "Initializing Terraform backend..."
+    terraform init -upgrade -reconfigure
+    echo "Formatting Terraform..."
+    terraform fmt -recursive
+    echo "Validating Terraform..."
+    terraform validate
+    echo "Running Terraform plan..."
+    terraform plan -out=tfplan
+
+
+
+  displayName: "Terraform Plan & Apply"
+  env:
+    ARM_USE_MSI: true
+    ARM_TENANT_ID: $(ARM_TENANT_ID)
+    ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+    TF_VAR_build_userid: "$(TF_VAR_build_userid)"
+    TF_VAR_build_url: "$(TF_VAR_build_url)"

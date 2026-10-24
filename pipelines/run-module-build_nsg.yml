@@ -1,0 +1,8 @@
+trigger: none
+pr: none
+
+extends:
+  template: templates/module-template.yml
+  parameters:
+    module_path: "modules/network_security_group"
+    display_name: "Network Security Group"

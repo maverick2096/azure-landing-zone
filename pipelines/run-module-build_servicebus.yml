@@ -1,0 +1,8 @@
+trigger: none
+pr: none
+
+extends:
+  template: templates/module-template.yml
+  parameters:
+    module_path: "modules/service_bus"
+    display_name: "Service Bus"

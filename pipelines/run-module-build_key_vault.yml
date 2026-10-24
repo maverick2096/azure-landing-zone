@@ -1,0 +1,8 @@
+trigger: none
+pr: none
+
+extends:
+  template: templates/module-template.yml
+  parameters:
+    module_path: "modules/key_vault"
+    display_name: "Key Vault"

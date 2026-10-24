@@ -1,0 +1,8 @@
+trigger: none
+pr: none
+
+extends:
+  template: templates/module-template.yml
+  parameters:
+    module_path: "modules/storage_account"
+    display_name: "Storage Account"
